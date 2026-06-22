@@ -189,9 +189,9 @@ function collectQuickPayload() {
     deployMode: 'create',
     deployType: 'pages',
     sourceMode: 'encoded',
-    projectName: randomName('cfnew'),
+    projectName: randomName('edge'),
     uuid: crypto.randomUUID(),
-    kvTitle: randomName('cfnew-kv'),
+    kvTitle: randomName('store'),
     hostname,
     zoneId: shouldBindDomain ? selectedZone.id : '',
     autoDomain: false
@@ -227,9 +227,9 @@ function collectAdvancedPayload() {
     deployMode,
     deployType: $('deployType').value,
     sourceMode: $('sourceMode').value,
-    projectName: $('projectName').value.trim() || randomName('cfnew'),
+    projectName: $('projectName').value.trim() || randomName('edge'),
     uuid: $('uuid').value.trim() || crypto.randomUUID(),
-    kvTitle: $('kvTitle').value.trim() || randomName('cfnew-kv'),
+    kvTitle: $('kvTitle').value.trim() || randomName('store'),
     kvId: $('kvId').value,
     hostname,
     zoneId: $('zoneId').value,
@@ -302,8 +302,8 @@ async function post(url, body) {
 }
 
 function setRandomNames() {
-  $('projectName').value = randomName('cfnew');
-  $('kvTitle').value = randomName('cfnew-kv');
+  $('projectName').value = randomName('edge');
+  $('kvTitle').value = randomName('store');
   $('kvId').value = '';
   $('existingProject').value = '';
   $('deployMode').value = 'create';
@@ -325,7 +325,7 @@ function updateQuickDomainPreview() {
 }
 
 function randomSubdomain(zoneName) {
-  return `${randomName('cfnew')}.${zoneName}`;
+  return `${randomName('edge')}.${zoneName}`;
 }
 
 function randomName(prefix) {

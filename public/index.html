@@ -3,21 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CFnew 部署器</title>
+    <title>云端部署器</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="shell">
       <section class="hero">
         <div>
-          <p class="eyebrow">本地 Cloudflare 部署软件</p>
-          <h1>CFnew 部署器</h1>
+          <p class="eyebrow">Cloudflare 部署软件</p>
+          <h1>云端部署器</h1>
           <p class="summary">填邮箱和 Global API Key，点一次自动完成 Pages、随机 UUID、随机 KV 和随机项目名；域名绑定可选，子域名自动随机。</p>
         </div>
         <div class="status-card">
           <span class="status-dot"></span>
-          <strong>Key 只发往本机服务</strong>
-          <p>前端不持久化密钥，本机 Node 进程直接调用 Cloudflare API。</p>
+          <strong>Key 不会持久化</strong>
+          <p>前端不写入本地存储，当前部署器 API 仅用于转发 Cloudflare 请求。</p>
         </div>
       </section>
 

@@ -1,73 +1,44 @@
-import { createServer } from 'node:http';
-import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { join, extname, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
-import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-
-const 端口 = Number(process.env.PORT || 8790);
-const 静态目录 = resolve(import.meta.dirname, 'public');
-const 源码目录 = resolve(import.meta.dirname, 'public', 'sources');
 const 接口地址 = 'https://api.cloudflare.com/client/v4';
 const 兼容日期 = '2026-01-20';
 const 绑定名 = 'C';
 
-const 服务 = createServer(async (请求, 响应) => {
+export async function onRequestPost(context) {
   try {
-    if (请求.url.startsWith('/api/')) {
-      await 处理接口(请求, 响应);
-      return;
+    const 数据 = await context.request.json().catch(() => ({}));
+    const 路径 = new URL(context.request.url).pathname.replace(/^\/api\/?/, '');
+    if (路径 === 'accounts') {
+      const accounts = await 调用接口(数据.credentials, '/accounts?per_page=50');
+      return 返回JSON(200, { ok: true, accounts: accounts.map(账户 => ({ id: 账户.id, name: 账户.name })) });
     }
-    await 处理静态文件(请求, 响应);
+    if (路径 === 'zones') {
+      const zones = await 调用接口(数据.credentials, '/zones?status=active&per_page=100');
+      return 返回JSON(200, { ok: true, zones: zones.map(区域 => ({ id: 区域.id, name: 区域.name })) });
+    }
+    if (路径 === 'resources') {
+      if (!数据.accountId) throw new Error('缺少 Account ID');
+      const resources = await 读取资源列表(数据.credentials, 数据.accountId);
+      return 返回JSON(200, { ok: true, ...resources });
+    }
+    if (路径 === 'deploy') {
+      const 结果 = await 部署(数据, context);
+      return 返回JSON(200, { ok: true, ...结果 });
+    }
+    return 返回JSON(404, { ok: false, error: '接口不存在' });
   } catch (错误) {
-    返回JSON(响应, 500, {
-      ok: false,
-      error: 错误.message || String(错误)
-    });
+    return 返回JSON(500, { ok: false, error: 错误.message || String(错误) });
   }
-});
-
-服务.listen(端口, () => {
-  console.log(`部署器已启动: http://localhost:${端口}`);
-});
-
-async function 处理接口(请求, 响应) {
-  if (请求.method !== 'POST') {
-    返回JSON(响应, 405, { ok: false, error: '只支持 POST' });
-    return;
-  }
-  const 数据 = await 读取JSON(请求);
-  if (请求.url === '/api/accounts') {
-    const accounts = await 调用接口(数据.credentials, '/accounts?per_page=50');
-    返回JSON(响应, 200, { ok: true, accounts: accounts.map(账户 => ({ id: 账户.id, name: 账户.name })) });
-    return;
-  }
-  if (请求.url === '/api/zones') {
-    const zones = await 调用接口(数据.credentials, '/zones?status=active&per_page=100');
-    返回JSON(响应, 200, { ok: true, zones: zones.map(区域 => ({ id: 区域.id, name: 区域.name })) });
-    return;
-  }
-  if (请求.url === '/api/resources') {
-    if (!数据.accountId) throw new Error('缺少 Account ID');
-    const resources = await 读取资源列表(数据.credentials, 数据.accountId);
-    返回JSON(响应, 200, { ok: true, ...resources });
-    return;
-  }
-  if (请求.url === '/api/deploy') {
-    const 结果 = await 部署(数据);
-    返回JSON(响应, 200, { ok: true, ...结果 });
-    return;
-  }
-  返回JSON(响应, 404, { ok: false, error: '接口不存在' });
 }
 
-async function 部署(数据) {
+export function onRequest() {
+  return 返回JSON(405, { ok: false, error: '只支持 POST' });
+}
+
+async function 部署(数据, context) {
   数据 = await 补全部署默认值(数据);
   校验部署参数(数据);
   const 日志 = [];
   const 记录 = 文本 => 日志.push(`[${new Date().toLocaleTimeString()}] ${文本}`);
-  const uuid = 数据.uuid || randomUUID();
+  const uuid = 数据.uuid || crypto.randomUUID();
   const 操作模式 = 数据.deployMode === 'update' ? 'update' : 'create';
   const 原始项目名 = String(数据.projectName || '').trim();
   const 项目名 = 操作模式 === 'update' ? 原始项目名 : 清理项目名(原始项目名 || 生成随机名称('edge'));
@@ -81,21 +52,16 @@ async function 部署(数据) {
         accountId: 数据.accountId,
         scriptName: 项目名,
         sourceMode: 模式
-      }, 记录);
+      }, context, 记录);
     } else {
       await 同步Pages代码(数据.credentials, {
         accountId: 数据.accountId,
         projectName: 项目名,
         sourceMode: 模式
-      }, 记录);
+      }, context, 记录);
     }
     记录('更新模式只同步代码，未修改 UUID、KV、域名或项目配置');
-    return {
-      deployType: 部署方式,
-      projectName: 项目名,
-      sourceMode: 模式,
-      logs: 日志
-    };
+    return { deployType: 部署方式, projectName: 项目名, sourceMode: 模式, logs: 日志 };
   }
   const 命名空间 = await 获取或创建KV(数据.credentials, 数据.accountId, {
     id: 数据.kvId,
@@ -114,7 +80,7 @@ async function 部署(数据) {
       uuid,
       kvId: 命名空间.id,
       enableWorkersDev: !!数据.enableWorkersDev
-    }, 记录);
+    }, context, 记录);
   } else {
     await 部署Pages(数据.credentials, {
       accountId: 数据.accountId,
@@ -122,7 +88,7 @@ async function 部署(数据) {
       sourceMode: 模式,
       uuid,
       kvId: 命名空间.id
-    }, 记录);
+    }, context, 记录);
   }
   let domain = null;
   if (数据.hostname && 数据.zoneId) {
@@ -201,10 +167,7 @@ async function 读取资源列表(凭据, accountId) {
   ]);
   const warnings = [];
   const workers = 提取列表(workerResult, warnings, 'Worker')
-    .map(项目 => ({
-      name: 项目.id || 项目.script_name || 项目.name,
-      title: 项目.id || 项目.script_name || 项目.name
-    }))
+    .map(项目 => ({ name: 项目.id || 项目.script_name || 项目.name, title: 项目.id || 项目.script_name || 项目.name }))
     .filter(项目 => 项目.name);
   const pages = 提取列表(pagesResult, warnings, 'Pages')
     .map(项目 => ({
@@ -215,10 +178,7 @@ async function 读取资源列表(凭据, accountId) {
     }))
     .filter(项目 => 项目.name);
   const kvs = 提取列表(kvResult, warnings, 'KV')
-    .map(空间 => ({
-      id: 空间.id,
-      title: 空间.title
-    }))
+    .map(空间 => ({ id: 空间.id, title: 空间.title }))
     .filter(空间 => 空间.id);
   return { workers, pages, kvs, warnings };
 }
@@ -257,8 +217,8 @@ function 校验部署参数(数据) {
   if (数据.hostname && !数据.zoneId) throw new Error('绑定域名时必须选择 Zone');
 }
 
-async function 部署Worker(凭据, 选项, 记录) {
-  const 代码 = await 读取源代码(选项.sourceMode);
+async function 部署Worker(凭据, 选项, context, 记录) {
+  const 代码 = await 读取源代码(选项.sourceMode, context);
   const 表单 = new FormData();
   const 元数据 = {
     main_module: 'worker.js',
@@ -281,8 +241,8 @@ async function 部署Worker(凭据, 选项, 记录) {
   }
 }
 
-async function 同步Worker代码(凭据, 选项, 记录) {
-  const 代码 = await 读取源代码(选项.sourceMode);
+async function 同步Worker代码(凭据, 选项, context, 记录) {
+  const 代码 = await 读取源代码(选项.sourceMode, context);
   const 设置 = await 读取Worker设置(凭据, 选项.accountId, 选项.scriptName);
   const 元数据 = 生成保留Worker元数据(设置);
   const 表单 = new FormData();
@@ -320,86 +280,84 @@ function 生成保留Worker元数据(设置) {
     if (设置?.[字段] !== undefined && 设置?.[字段] !== null) 元数据[字段] = 设置[字段];
   }
   if (!元数据.main_module) 元数据.main_module = 'worker.js';
-  if (!元数据.compatibility_date) {
-    throw new Error('无法读取现有 Worker compatibility_date，已停止更新以避免修改配置');
-  }
-  if (!Array.isArray(元数据.bindings)) {
-    throw new Error('无法读取现有 Worker 绑定，已停止更新以避免覆盖 KV/UUID 配置');
-  }
+  if (!元数据.compatibility_date) throw new Error('无法读取现有 Worker compatibility_date，已停止更新以避免修改配置');
+  if (!Array.isArray(元数据.bindings)) throw new Error('无法读取现有 Worker 绑定，已停止更新以避免覆盖 KV/UUID 配置');
   return 元数据;
 }
 
-async function 部署Pages(凭据, 选项, 记录) {
+async function 部署Pages(凭据, 选项, context, 记录) {
   const 项目 = await 创建或更新Pages项目(凭据, 选项, 记录);
-  const 临时目录 = await mkdtemp(join(tmpdir(), 'deploy-panel-pages-'));
-  try {
-    const 代码 = await 读取源代码(选项.sourceMode);
-    await writeFile(join(临时目录, '_worker.js'), 代码, 'utf8');
-    await writeFile(join(临时目录, 'index.html'), '<!doctype html><meta charset="utf-8"><title>Deploy</title>', 'utf8');
-    await writeFile(join(临时目录, 'wrangler.toml'), 生成PagesWrangler(选项), 'utf8');
-    记录(`Pages 项目已配置: ${项目.name}`);
-    const 输出 = await 运行Wrangler([
-      'pages',
-      'deploy',
-      临时目录,
-      '--project-name',
-      选项.projectName,
-      '--branch',
-      'main',
-      '--commit-dirty',
-      'true',
-      '--no-bundle'
-    ], 凭据, 选项.accountId, 临时目录);
-    输出.trim().split('\n').filter(Boolean).forEach(行 => 记录(`wrangler: ${行}`));
-    记录('Pages 部署上传完成');
-  } finally {
-    await rm(临时目录, { recursive: true, force: true });
-  }
+  const 代码 = await 读取源代码(选项.sourceMode, context);
+  await 上传Pages部署(凭据, 选项.accountId, 选项.projectName, 代码, 记录);
+  记录(`Pages 项目已配置: ${项目.name}`);
+  记录('Pages 部署上传完成');
 }
 
-async function 同步Pages代码(凭据, 选项, 记录) {
+async function 同步Pages代码(凭据, 选项, context, 记录) {
   try {
     await 调用接口(凭据, `/accounts/${选项.accountId}/pages/projects/${encodeURIComponent(选项.projectName)}`);
   } catch (错误) {
     if (String(错误.message).includes('404')) throw new Error(`找不到现有 Pages 项目: ${选项.projectName}`);
     throw 错误;
   }
-  const 临时目录 = await mkdtemp(join(tmpdir(), 'deploy-panel-pages-update-'));
-  try {
-    const 代码 = await 读取源代码(选项.sourceMode);
-    await writeFile(join(临时目录, '_worker.js'), 代码, 'utf8');
-    记录('Pages 更新模式未写入 wrangler.toml，不修改 KV/变量/域名配置');
-    const 输出 = await 运行Wrangler([
-      'pages',
-      'deploy',
-      临时目录,
-      '--project-name',
-      选项.projectName,
-      '--branch',
-      'main',
-      '--commit-dirty',
-      'true',
-      '--no-bundle'
-    ], 凭据, 选项.accountId, 临时目录);
-    输出.trim().split('\n').filter(Boolean).forEach(行 => 记录(`wrangler: ${行}`));
-    记录('Pages 代码同步完成');
-  } finally {
-    await rm(临时目录, { recursive: true, force: true });
-  }
+  const 代码 = await 读取源代码(选项.sourceMode, context);
+  记录('Pages 更新模式不修改 KV/变量/域名配置');
+  await 上传Pages部署(凭据, 选项.accountId, 选项.projectName, 代码, 记录);
+  记录('Pages 代码同步完成');
 }
 
-function 生成PagesWrangler(选项) {
-  return `name = "${选项.projectName}"
-compatibility_date = "${兼容日期}"
-pages_build_output_dir = "."
+async function 上传Pages部署(凭据, accountId, projectName, workerCode, 记录) {
+  const manifest = await 上传Pages静态资源(凭据, accountId, projectName);
+  const 表单 = new FormData();
+  表单.append('manifest', JSON.stringify(manifest));
+  表单.append('branch', 'main');
+  表单.append('commit_dirty', 'true');
+  表单.append('commit_message', 'deploy from hosted deployer');
+  const workerBundle = await 生成WorkerBundle(workerCode);
+  表单.append('_worker.bundle', workerBundle, '_worker.bundle');
+  const deployment = await 调用接口(凭据, `/accounts/${accountId}/pages/projects/${encodeURIComponent(projectName)}/deployments`, {
+    method: 'POST',
+    body: 表单
+  });
+  if (deployment?.url) 记录(`Pages 地址: ${deployment.url}`);
+}
 
-[vars]
-u = "${选项.uuid}"
+async function 上传Pages静态资源(凭据, accountId, projectName) {
+  const { jwt } = await 调用接口(凭据, `/accounts/${accountId}/pages/projects/${encodeURIComponent(projectName)}/upload-token`);
+  const 内容 = '<!doctype html><meta charset="utf-8"><title>Deploy</title>';
+  const 字节 = new TextEncoder().encode(内容);
+  const hash = await 计算资源Hash(字节, 'html');
+  const missing = await 调用JWT接口(jwt, '/pages/assets/check-missing', {
+    method: 'POST',
+    body: { hashes: [hash] }
+  });
+  if (!Array.isArray(missing) || missing.includes(hash)) {
+    await 调用JWT接口(jwt, '/pages/assets/upload', {
+      method: 'POST',
+      body: [{
+        key: hash,
+        value: 字节转Base64(字节),
+        metadata: { contentType: 'text/html; charset=utf-8' },
+        base64: true
+      }]
+    });
+  }
+  await 调用JWT接口(jwt, '/pages/assets/upsert-hashes', {
+    method: 'POST',
+    body: { hashes: [hash] }
+  }).catch(() => null);
+  return { '/index.html': hash };
+}
 
-[[kv_namespaces]]
-binding = "${绑定名}"
-id = "${选项.kvId}"
-`;
+async function 生成WorkerBundle(workerCode) {
+  const 内层 = new FormData();
+  const 元数据 = {
+    main_module: 'worker.js',
+    compatibility_date: 兼容日期
+  };
+  内层.set('metadata', JSON.stringify(元数据));
+  内层.set('worker.js', new Blob([workerCode], { type: 'application/javascript+module' }), 'worker.js');
+  return await new Response(内层).blob();
 }
 
 async function 创建或更新Pages项目(凭据, 选项, 记录) {
@@ -423,9 +381,7 @@ async function 创建或更新Pages项目(凭据, 选项, 记录) {
   }
   await 调用接口(凭据, `/accounts/${选项.accountId}/pages/projects/${encodeURIComponent(选项.projectName)}`, {
     method: 'PATCH',
-    body: {
-      deployment_configs: 合并Pages配置(项目.deployment_configs || {}, 选项)
-    }
+    body: { deployment_configs: 合并Pages配置(项目.deployment_configs || {}, 选项) }
   });
   记录('Pages 项目配置已更新');
   return 项目;
@@ -434,12 +390,8 @@ async function 创建或更新Pages项目(凭据, 选项, 记录) {
 function 生成Pages配置(选项) {
   const 单项 = {
     compatibility_date: 兼容日期,
-    env_vars: {
-      u: { type: 'plain_text', value: 选项.uuid }
-    },
-    kv_namespaces: {
-      [绑定名]: { namespace_id: 选项.kvId }
-    }
+    env_vars: { u: { type: 'plain_text', value: 选项.uuid } },
+    kv_namespaces: { [绑定名]: { namespace_id: 选项.kvId } }
   };
   return { production: 单项, preview: 单项 };
 }
@@ -553,36 +505,15 @@ async function 列出绑定域名(凭据, 选项, 记录) {
   }
 }
 
-async function 读取源代码(mode) {
+async function 读取源代码(mode, context) {
   const 文件名 = mode === 'plain' ? '明文源吗' : '少年你相信光吗';
-  return readFile(join(源码目录, 文件名), 'utf8');
-}
-
-async function 运行Wrangler(args, 凭据, accountId, 工作目录 = process.cwd()) {
-  return new Promise((resolvePromise, reject) => {
-    const 子进程 = spawn('npx', ['-y', 'wrangler', ...args], {
-      cwd: 工作目录,
-      env: {
-        ...process.env,
-        CLOUDFLARE_EMAIL: 凭据.email,
-        CLOUDFLARE_API_KEY: 凭据.key,
-        CLOUDFLARE_ACCOUNT_ID: accountId
-      },
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
-    let 输出 = '';
-    子进程.stdout.on('data', 块 => {
-      输出 += 块.toString();
-    });
-    子进程.stderr.on('data', 块 => {
-      输出 += 块.toString();
-    });
-    子进程.on('error', reject);
-    子进程.on('close', code => {
-      if (code === 0) resolvePromise(输出);
-      else reject(new Error(输出 || `wrangler 退出码: ${code}`));
-    });
-  });
+  const 地址 = new URL(context.request.url);
+  地址.pathname = `/sources/${encodeURIComponent(文件名)}`;
+  地址.search = '';
+  const 请求 = new Request(地址.toString(), { method: 'GET' });
+  const 响应 = context.env?.ASSETS?.fetch ? await context.env.ASSETS.fetch(请求) : await fetch(请求);
+  if (!响应.ok) throw new Error(`读取部署源失败: ${响应.status}`);
+  return await 响应.text();
 }
 
 async function 调用接口(凭据, 路径, 选项 = {}) {
@@ -600,12 +531,23 @@ async function 调用接口(凭据, 路径, 选项 = {}) {
 }
 
 async function 调用原始接口(凭据, 路径, 选项 = {}) {
-  const 地址 = 路径.startsWith('http') ? 路径 : `${接口地址}${路径}`;
   const headers = {
     'X-Auth-Email': 凭据.email,
     'X-Auth-Key': 凭据.key,
     ...(选项.headers || {})
   };
+  return await 请求JSON(`${接口地址}${路径}`, headers, 选项);
+}
+
+async function 调用JWT接口(jwt, 路径, 选项 = {}) {
+  const headers = {
+    Authorization: `Bearer ${jwt}`,
+    ...(选项.headers || {})
+  };
+  return await 请求JSON(`${接口地址}${路径}`, headers, 选项);
+}
+
+async function 请求JSON(地址, headers, 选项 = {}) {
   let body = 选项.body;
   if (body && !(body instanceof FormData) && typeof body !== 'string') {
     headers['Content-Type'] = headers['Content-Type'] || 'application/json';
@@ -624,41 +566,35 @@ async function 调用原始接口(凭据, 路径, 选项 = {}) {
       : (响应体.errors || []).map(错误 => 错误.message || JSON.stringify(错误)).join('; ');
     throw new Error(`${响应.status} ${响应.statusText}${消息 ? ` - ${消息}` : ''}`);
   }
+  if (响应体 && typeof 响应体 === 'object' && 'success' in 响应体) {
+    if (!响应体.success) {
+      const 消息 = (响应体.errors || []).map(错误 => 错误.message || JSON.stringify(错误)).join('; ') || 'Cloudflare API 请求失败';
+      throw new Error(消息);
+    }
+    return 响应体.result;
+  }
   return 响应体;
 }
 
-async function 读取JSON(请求) {
-  let 内容 = '';
-  for await (const 块 of 请求) 内容 += 块;
-  return 内容 ? JSON.parse(内容) : {};
+async function 计算资源Hash(bytes, extension) {
+  const 摘要 = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${字节转Base64(bytes)}${extension}`));
+  return [...new Uint8Array(摘要)].map(byte => byte.toString(16).padStart(2, '0')).join('').slice(0, 32);
 }
 
-async function 处理静态文件(请求, 响应) {
-  const 地址 = new URL(请求.url, 'http://localhost');
-  const pathname = decodeURIComponent(地址.pathname === '/' ? '/index.html' : 地址.pathname);
-  const 文件路径 = resolve(静态目录, `.${pathname}`);
-  if (!文件路径.startsWith(静态目录) || !existsSync(文件路径)) {
-    响应.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-    响应.end('Not Found');
-    return;
+function 字节转Base64(bytes) {
+  let 二进制 = '';
+  const 步长 = 0x8000;
+  for (let index = 0; index < bytes.length; index += 步长) {
+    二进制 += String.fromCharCode(...bytes.slice(index, index + 步长));
   }
-  const 类型 = 获取类型(文件路径);
-  响应.writeHead(200, { 'Content-Type': 类型 });
-  响应.end(await readFile(文件路径));
+  return btoa(二进制);
 }
 
-function 返回JSON(响应, 状态码, 数据) {
-  响应.writeHead(状态码, { 'Content-Type': 'application/json; charset=utf-8' });
-  响应.end(JSON.stringify(数据));
-}
-
-function 获取类型(文件路径) {
-  return {
-    '.html': 'text/html; charset=utf-8',
-    '.css': 'text/css; charset=utf-8',
-    '.js': 'text/javascript; charset=utf-8',
-    '.svg': 'image/svg+xml'
-  }[extname(文件路径)] || 'application/octet-stream';
+function 返回JSON(状态码, 数据) {
+  return new Response(JSON.stringify(数据), {
+    status: 状态码,
+    headers: { 'Content-Type': 'application/json; charset=utf-8' }
+  });
 }
 
 function 清理项目名(名称) {
@@ -666,5 +602,5 @@ function 清理项目名(名称) {
 }
 
 function 生成随机名称(prefix) {
-  return `${prefix}-${randomUUID().slice(0, 8)}`;
+  return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
 }
